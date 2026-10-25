@@ -1,0 +1,16 @@
+# 精确锁定版本（2026-10-25 在本机实测通过的组合）
+# 用途：bootstrap.ps1 按此文件重建 deps 目录；换机器时行为一致。
+#
+# 关键约束：
+#   faster-whisper 1.2.1 依赖 av>=15，但 av 19 的 open() 不接受 metadata_errors，
+#   所以 worker 不读文件、直接喂 numpy 数组（见 worker.py 的 load/pcm 逻辑）。
+#   numpy 必须用“能加载的那份”（DSH runtime 自带的 2.3.5）：
+#   deps 里的 numpy 2.5.4 会被 Windows Smart App Control 拦。
+
+faster-whisper==1.2.1
+ctranslate2==4.8.3
+tokenizers==0.23.3
+onnxruntime==1.31.0
+huggingface_hub==2.3.0
+pilk==0.2.4
+typing_extensions==4.16.0

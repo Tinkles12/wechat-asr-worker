@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+*.whl binary
+*.png binary
+*.jpg binary
+*.silk binary
+*.wav binary
+*.dll binary
+*.pyd binary

@@ -1,0 +1,49 @@
+name: tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  integration:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Integration tests (install / idempotent / uninstall)
+        shell: pwsh
+        run: ./tests/run-tests.ps1
+
+      - name: Validate schema.json
+        shell: pwsh
+        run: |
+          $schema = Get-Content schema.json -Raw | ConvertFrom-Json
+          foreach ($name in 'TranscribeRequest', 'TranscribeResponse', 'ErrorResponse', 'HealthResponse') {
+            if (-not $schema.'$defs'.$name) { throw "schema.json 缺少 $name" }
+          }
+          $codes = $schema.'$defs'.ErrorResponse.properties.error.enum
+          if ($codes.Count -lt 10) { throw "错误码枚举不完整（$($codes.Count)）" }
+          Write-Host "schema OK: $($codes.Count) error codes"
+
+      - name: Python syntax
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m py_compile worker.py
+
+      - name: PowerShell syntax
+        shell: pwsh
+        run: |
+          $failed = 0
+          Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object {
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors)
+            if ($errors.Count) {
+              Write-Host "FAIL $($_.Name): $($errors[0].Message)"
+              $failed = 1
+            }
+          }
+          if ($failed) { exit 1 }
+          Write-Host 'all .ps1 parsed'

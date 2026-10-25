@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "asr-worker/schema.json",
+  "title": "WeChatAgent ASR worker 契约",
+  "description": "语音转文字。只有两个 HTTP 端点，全部 JSON。调用方只需依赖本文件，不应知道内部用的是哪个 Python 或哪个模型。",
+  "version": "1.0.0",
+  "x-endpoints": [
+    {
+      "method": "GET",
+      "path": "/health",
+      "auth": "X-ASR-Token（仅当服务端配置了 ASR_TOKEN）",
+      "response": "HealthResponse"
+    },
+    {
+      "method": "POST",
+      "path": "/transcribe",
+      "auth": "X-ASR-Token（仅当服务端配置了 ASR_TOKEN）",
+      "request": "TranscribeRequest",
+      "response": "TranscribeResponse | ErrorResponse"
+    }
+  ],
+  "$defs": {
+    "TranscribeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["audio"],
+      "properties": {
+        "audio": {
+          "type": "string",
+          "minLength": 4,
+          "description": "base64 编码的音频字节。silk 直接放微信库里的原始 blob；wav 放完整 RIFF 文件。"
+        },
+        "format": {
+          "enum": ["silk", "wav", "pcm16"],
+          "default": "silk",
+          "description": "silk=微信语音原始格式；wav=44 字节头的 RIFF；pcm16=裸 s16le 小端。"
+        },
+        "sampleRate": {
+          "type": "integer",
+          "minimum": 8000,
+          "maximum": 48000,
+          "description": "仅 format=pcm16 时需要，缺省 16000。"
+        },
+        "language": {
+          "type": "string",
+          "pattern": "^[a-z]{2,3}$",
+          "default": "zh",
+          "description": "ISO-639-1。错填会明显掉准确率。"
+        },
+        "prompt": {
+          "type": "string",
+          "maxLength": 400,
+          "description": "给模型的上下文提示，例如「以下是简体中文普通话对话」。中文默认会自动带上，用于压制繁体输出。"
+        }
+      }
+    },
+    "TranscribeResponse": {
+      "type": "object",
+      "required": ["text", "seconds", "inferMs", "model", "language", "format"],
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "转写结果。可能为空字符串（纯静音或识别失败但未报错），调用方应把空串当作「没听清」而不是「没说话」。"
+        },
+        "seconds": {
+          "type": "number",
+          "minimum": 0,
+          "description": "归一化到 16kHz 后的音频时长（秒），保留两位小数。"
+        },
+        "inferMs": { "type": "integer", "minimum": 0, "description": "推理耗时（毫秒）。" },
+        "waitMs": { "type": "integer", "minimum": 0, "description": "排队等待耗时（毫秒）。" },
+        "model": { "type": "string", "description": "实际使用的模型名，如 small。" },
+        "language": { "type": "string" },
+        "format": { "enum": ["silk", "wav", "pcm16"] }
+      }
+    },
+    "ErrorResponse": {
+      "type": "object",
+      "required": ["error"],
+      "properties": {
+        "error": {
+          "type": "string",
+          "enum": [
+            "ASR_MISSING_AUDIO",
+            "ASR_INVALID_BASE64",
+            "ASR_EMPTY_AUDIO",
+            "ASR_UNSUPPORTED_FORMAT",
+            "ASR_WAV_NOT_16BIT",
+            "ASR_SILK_DECODE_EMPTY",
+            "ASR_INVALID_JSON",
+            "ASR_EMPTY_BODY",
+            "ASR_BAD_LENGTH",
+            "ASR_BODY_TOO_LARGE",
+            "ASR_UNAUTHORIZED",
+            "ASR_NOT_FOUND",
+            "ASR_TRANSCRIBE_FAILED"
+          ],
+          "description": "稳定的机器可读错误码。新增值只能追加，不能改名——调用方按它做分支。"
+        },
+        "detail": { "type": "string", "description": "可选的人类可读补充，不保证稳定。" }
+      }
+    },
+    "HealthResponse": {
+      "type": "object",
+      "required": ["ok", "version", "model", "ready"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "version": { "type": "string" },
+        "model": { "type": "string" },
+        "device": { "type": "string" },
+        "computeType": { "type": "string" },
+        "ready": { "type": "boolean", "description": "模型是否已加载完成。启动后未就绪时为 false。" },
+        "busy": { "type": "boolean", "description": "当前是否正在推理（单实例串行）。" },
+        "served": { "type": "integer", "description": "累计成功次数。" },
+        "failed": { "type": "integer", "description": "累计失败次数。" },
+        "uptimeSec": { "type": "integer" }
+      }
+    }
+  }
+}

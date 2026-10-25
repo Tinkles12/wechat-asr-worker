@@ -1,0 +1,17 @@
+[project]
+name = "wechatagent-asr-worker"
+version = "1.0.0"
+description = "WeChat voice (silk) -> text worker for WeChatAgent"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+  "faster-whisper==1.2.1",
+  "pilk==0.2.4",
+  "numpy>=2,<3",
+]
+
+# 注意：本文件只声明“需要什么”，不负责安装。
+# 实际安装请用 bootstrap.ps1（它会 --target 到一个独立目录，避免污染任何运行时）。
+[tool.asr-worker]
+model-default = "small"
+port-default = 5032
+listen = "127.0.0.1"
