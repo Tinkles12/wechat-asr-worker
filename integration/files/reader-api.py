@@ -230,6 +230,8 @@ class Reader:
         self.voice_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
         self.voice_jobs = {}
         self.voice_down_until = 0.0
+        self.voice_pending_file = self.root / 'state' / 'voice-pending.json'
+        self.voice_retry = self._load_voice_retry()
         self.asr_url = (os.environ.get('ASR_URL') or 'http://127.0.0.1:5032').rstrip('/')
         self.stop = threading.Event()
         # Probe actual message shards now; listening on a port is not readiness.
@@ -804,28 +806,63 @@ class Reader:
                     self.clients.discard(client)
         self.pushed += 1
 
-    def queue_voice(self, payload):
-        """语音先不推：丢给 ASR，转写完（或超时）再一次性推出去。
+    # ---- 语音：转写完成才推，期间不打扰模型 ----
 
-        这样私聊里不会先发一条「收到语音」再补一条「内容是…」——
-        bridge 对私聊是立即调模型的，两条会被当成两轮。
+    VOICE_RETRY_SECONDS = 300.0     # 音频可能几分钟后才被微信下载
+    VOICE_RETRY_INTERVAL = 15.0
+    VOICE_FIRST_WAIT = 8.0
+
+    def _load_voice_retry(self):
+        try:
+            if not self.voice_pending_file.is_file():
+                return {}
+            data = json.loads(self.voice_pending_file.read_text(encoding='utf-8'))
+            if data.get('version') != 1 or not isinstance(data.get('entries'), dict):
+                return {}
+            return data['entries']
+        except (OSError, ValueError):
+            return {}
+
+    def _save_voice_retry(self):
+        try:
+            self.voice_pending_file.parent.mkdir(parents=True, exist_ok=True)
+            temp = self.voice_pending_file.with_suffix('.tmp')
+            temp.write_text(json.dumps({'version': 1, 'entries': self.voice_retry}, ensure_ascii=False), encoding='utf-8')
+            temp.replace(self.voice_pending_file)
+        except OSError:
+            pass
+
+    def _voice_label(self, payload, reason=''):
+        seconds = float((payload.get('voice') or {}).get('seconds') or 0)
+        hint = {'no-id': '缺少音频标识', 'gave-up': '音频未就绪'}.get(reason, '')
+        return '[语音 %.1f 秒%s，内容未转写]' % (seconds, '，' + hint if hint else '')
+
+    def queue_voice(self, payload):
+        """语音先不推：转写成功才推一条完整消息。
+
+        转写期间绝不发占位——否则模型会对着「内容未转写」自说自话。
+        失败就进重试队列（音频常常几分钟后才落盘），最多等 5 分钟。
         """
         voice = payload.get('voice') or {}
         server_id = str(voice.get('serverId') or '')
-        if not re.fullmatch(r'\d{1,32}', server_id) or time.monotonic() < self.voice_down_until:
+        if not re.fullmatch(r'\d{1,32}', server_id):
+            payload['content'] = self._voice_label(payload, 'no-id')
             self.broadcast(payload)
+            return
+        if time.monotonic() < self.voice_down_until:
+            self._queue_voice_retry(server_id, payload)
             return
         job = {
             'payload': payload,
             'conversation': self.conversation_id(payload['sessionId']),
-            'deadline': time.monotonic() + 4.0,
+            'deadline': time.monotonic() + self.VOICE_FIRST_WAIT,
             'future': self.voice_executor.submit(self.transcribe_voice, payload),
         }
         with self.lock:
             self.voice_jobs[server_id] = job
 
     def transcribe_voice(self, payload):
-        """调 ASR worker；任何失败都返回空文本，由 flush 决定占位文案。"""
+        """调 ASR worker；任何失败都返回空文本，由 flush/retry 决定下一步。"""
         voice = payload.get('voice') or {}
         server_id = str(voice.get('serverId') or '')
         try:
@@ -841,8 +878,54 @@ class Reader:
             print('Reader voice transcription failed: ' + type(error).__name__, flush=True)
             return {'text': '', 'error': type(error).__name__}
 
+    def _queue_voice_retry(self, server_id, payload):
+        now = time.time()
+        entry = self.voice_retry.get(server_id)
+        if entry:
+            entry['nextAt'] = now + self.VOICE_RETRY_INTERVAL
+            return
+        self.voice_retry[server_id] = {
+            'payload': payload,
+            'conversation': self.conversation_id(payload['sessionId']),
+            'expires': now + self.VOICE_RETRY_SECONDS,
+            'nextAt': now + self.VOICE_RETRY_INTERVAL,
+            'attempts': 0,
+        }
+        self._save_voice_retry()
+        print('Reader voice deferred (audio not ready); conversation=' +
+              self.voice_retry[server_id]['conversation'], flush=True)
+
+    def _retry_voice_pending(self):
+        if not self.voice_retry:
+            return
+        now = time.time()
+        dropped = []
+        for server_id, entry in list(self.voice_retry.items()):
+            if now >= entry['expires']:
+                dropped.append(server_id)
+                continue
+            if now < entry['nextAt']:
+                continue
+            entry['attempts'] += 1
+            entry['nextAt'] = now + self.VOICE_RETRY_INTERVAL
+            with self.lock:
+                if server_id in self.voice_jobs:      # 上一轮还没跑完，别重复提交
+                    continue
+                self.voice_jobs[server_id] = {
+                    'payload': entry['payload'],
+                    'conversation': entry['conversation'],
+                    'deadline': time.monotonic() + self.VOICE_FIRST_WAIT,
+                    'future': self.voice_executor.submit(self.transcribe_voice, entry['payload']),
+                    'retry': True,
+                }
+        for server_id in dropped:
+            entry = self.voice_retry.pop(server_id, None)
+            print('Reader voice gave_up conversation=' + (entry or {}).get('conversation', '?'), flush=True)
+        if dropped:
+            self._save_voice_retry()
+
     def flush_voice(self):
-        """把已完成的转写补成一条完整消息；超时的发占位，绝不丢消息。"""
+        """转写完成 → 推一条完整消息；失败 → 进重试队列（不发占位）。"""
         now = time.monotonic()
         ready = []
         with self.lock:
@@ -854,16 +937,18 @@ class Reader:
         for server_id, job, result in ready:
             with self.lock:
                 self.voice_jobs.pop(server_id, None)
-            payload = dict(job['payload'])
             text = (result or {}).get('text') or ''
             if text:
+                payload = dict(job['payload'])
                 payload['content'] = '[语音内容] ' + text[:4000]
                 payload['voiceTranscribed'] = True
+                self.broadcast(payload)
+                if self.voice_retry.pop(server_id, None):
+                    self._save_voice_retry()
+                print('Reader voice transcribed; OneBot conversation=' + job['conversation'], flush=True)
             else:
-                payload['voiceTranscribed'] = False
-            self.broadcast(payload)
-            print('Reader voice ' + ('transcribed' if text else 'unavailable') +
-                  '; OneBot conversation=' + job['conversation'], flush=True)
+                self._queue_voice_retry(server_id, job['payload'])
+        self._retry_voice_pending()
 
     def poll(self):
         since = self.started_at

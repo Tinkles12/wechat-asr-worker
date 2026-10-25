@@ -25,11 +25,30 @@ hook-onebot.mjs   7b407c48359108402b7f3f2268bc56d5f688bbfc75c167306384e18493abca
 | # | 文件 | 行为 |
 | --- | --- | --- |
 | 1 | `reader-api.py` | 放行 `type=34`，从 XML 取 `voicelength` |
-| 2 | `reader-api.py` | 生成占位 `[语音 2.2 秒，内容未转写]` |
-| 3 | `reader-api.py` | 新增 `GET /api/v1/voices/<svr_id>`，从 `media_0.db` 的 `VoiceInfo` 取 silk |
-| 4 | `reader-api.py` | 异步转写：`queue_voice` → ASR → `flush_voice`（4 秒截止） |
+| 2 | `reader-api.py` | 新增 `GET /api/v1/voices/<svr_id>`，从 `media_0.db` 的 `VoiceInfo` 取 silk |
+| 3 | `reader-api.py` | 异步转写：成功才推一条 `[语音内容] xxx`，**转写期间不推占位** |
+| 4 | `reader-api.py` | 转写失败 → 进重试队列（15 秒一次，最多 5 分钟），成功后补推 |
 | 5 | `reader-api.py` | `/api/v1/reader/status` 增加 `voice` 字段 |
 | 6 | `hook-onebot.mjs` | 第二道类型白名单放行 34 |
+
+**为什么失败不推占位**：模型看到 `[语音 4.5 秒，内容未转写]` 会对着它自说自话（"我这边也是空壳，麻烦你重发"）。宁可晚几秒，也不要让模型说废话。
+
+## ⚠️ 安装版有两份副本，必须都打
+
+实测踩到的坑：
+
+```text
+<root>\app\resources\project\scripts\    ← 模板源
+<root>\data\workspace\scripts\           ← 工作副本（真正运行的）
+```
+
+`app\resources\app\deployment.cjs` 每次启动控制台时会把模板源同步到工作副本，**内容不同就覆盖**（第 31-33 行）。
+
+只改 `data\workspace` 的话，**下次启动补丁就没了**——表现就是"语音又变成内容未转写了"。
+
+`install.ps1` 现在同时打两处：先模板源，再工作副本。同步时两边内容一致，不会被覆盖。
+
+源码版（只有 `scripts\`）不受影响。
 
 **没有改**：文本、图片、表情、文件、引用、转发、拍一拍的任何路径；消息格式；DSH 插件。
 
