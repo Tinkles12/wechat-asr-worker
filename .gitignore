@@ -2,3 +2,9 @@ logs/
 run/
 __pycache__/
 *.pyc
+
+# 模型与依赖目录（体积大，按需重建）
+.voice/
+models/
+*.silk
+*.wav

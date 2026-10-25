@@ -103,6 +103,56 @@ py -3.13 -m pip wheel --no-deps --wheel-dir .\wheels pilk
 
 放进去后 `bootstrap.ps1` 会自动优先使用本地 wheel（`--find-links`），不再联网、不再编译。
 
+## 模型下载与离线部署
+
+**仓库不包含模型。** 首次 `start.ps1` 时会从 HuggingFace 自动下载，之后复用本地缓存。
+
+| 项 | 值 |
+| --- | --- |
+| 默认模型 | `Systran/faster-whisper-small` |
+| 体积 | **约 464 MB**（6 个文件） |
+| 首次下载耗时 | 实测 225 秒（取决于网络） |
+| 缓存位置 | `<asr-worker 上一级>/.voice/models/`，或 `ASR_MODEL_DIR` |
+
+为什么不打包进仓库：
+
+1. GitHub 单文件上限 100 MB，LFS 要额外配额，clone 会变成 464 MB；
+2. 模型有自己的许可证，随仓库分发要单独处理；
+3. 多数人只需要 `small`，没必要替所有人下。
+
+### 内网 / 离线机器
+
+把整个 `models--Systran--faster-whisper-small` 目录拷过去，放到目标机器的同一位置：
+
+```text
+<目标机器>\...\.voice\models\models--Systran--faster-whisper-small\
+```
+
+或用 `ASR_MODEL_DIR` 指向你放模型的地方：
+
+```powershell
+$env:ASR_MODEL_DIR = 'D:\models'
+.\start.ps1
+```
+
+模型已在本地时，faster-whisper 不会再联网。
+
+### 国内网络
+
+```powershell
+$env:HF_ENDPOINT = 'https://hf-mirror.com'
+.\start.ps1
+```
+
+### 想更快启动
+
+```powershell
+.\start.ps1 -Model tiny     # ~75 MB
+.\start.ps1 -Model base     # ~145 MB
+```
+
+实测 `small` 对 2 秒语音约 1.3 秒；`tiny` 约 0.4 秒，但中文短句容易漏字。
+
 ## 接口
 
 只有两个端点，全部 JSON，只监听 `127.0.0.1`。
