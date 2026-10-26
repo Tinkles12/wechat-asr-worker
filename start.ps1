@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string]$Python = '',
     [int]$Port = 5032,
@@ -46,11 +46,18 @@ if ($Foreground) {
     exit $LASTEXITCODE
 }
 
-# 端口已占用就直接退出，不要起第二个实例
+# 幂等：已经在跑就安静退出；端口被别的程序占了才报错
 $occupied = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
 if ($occupied) {
+    try {
+        $health = Invoke-RestMethod "http://127.0.0.1:$Port/health" -TimeoutSec 2
+        if ($health.ok -eq $true) {
+            Write-Host "already running: http://127.0.0.1:$Port  model=$($health.model)  pid=$($occupied[0].OwningProcess)"
+            return
+        }
+    } catch { }
     $owner = $occupied[0].OwningProcess
-    throw "port $Port is already in use (pid $owner). Run stop.ps1 first."
+    throw "port $Port is already in use by pid $owner (not an asr-worker). Run stop.ps1 -Port $Port or pick another -Port."
 }
 
 $env:ASR_PORT = "$Port"

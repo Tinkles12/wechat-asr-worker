@@ -44,6 +44,36 @@ asr-worker/
 
 ## 快速开始
 
+### 双击党（不用记命令）
+
+```text
+Start-ASR.cmd    启动（双击，窗口会显示结果后停住）
+Stop-ASR.cmd     停止（双击）
+```
+
+推荐的日常顺序：
+
+```text
+1. 先启动 WeChatAgent（控制台 / 快捷方式）
+2. 再双击 Start-ASR.cmd
+3. 看到 `ready : http://127.0.0.1:5032  model=small  pid=xxxxx` 就成了
+4. 关闭那个黑窗口（不影响后台服务）
+```
+
+**为什么是手动而不是自动跟随**：
+
+- WeChatAgent 每次启动会用模板覆盖 `data\workspace\scripts`，把它挂进 `manage.ps1` 活不过一次重启；
+- 要真正做到“它起我也起”，得常驻一个轮询 5031 端口的看门狗进程，多一份复杂度和资源占用；
+- 手动一步（双击）换来的是零依赖、零幻觉、出问题一眼能看出是谁没起。
+
+顺序不能反：**ASR 先起、WeChatAgent 后起也没关系**，reader 只在收到语音时才去问 5032；但如果 ASR 没起，语音会进重试队列，5 分钟后静默丢弃（模型不会收到任何消息）。
+
+`Start-ASR.cmd` 是**幂等**的：已经在跑就打印 `already running ... pid=xxx` 并退出 0，不会起第二个实例。
+
+批处理默认优先用 `pwsh`（PowerShell 7+，已测），没有则回退 `powershell`（5.1 上 `start.ps1` 有兼容问题，见「已知坑」）。
+
+### 命令行党
+
 ```powershell
 # 1) 装依赖（第一次或换机器时；需要网络 + C 编译器）
 .\bootstrap.ps1
@@ -285,6 +315,24 @@ pip 用 `tempfile.mkdtemp` 建 0o700 的临时目录，沙箱 token 写不进去
 **6）中文会混繁体**
 
 whisper 的中文输出可能一半简体一半繁体（`大飞鱼` / `大飛魚`）。worker 默认带 `initial_prompt="以下是简体中文普通话对话。"` 压制，但**不能完全消除**。要彻底解决，转写后再过一遍 opencc 简繁转换。
+
+**7）Windows PowerShell 5.1 跑不了 `start.ps1`**
+
+现象：
+
+```
+start.ps1 : Cannot bind argument to parameter 'LiteralPath' because it is null.
+```
+
+`pwsh`（PowerShell 7+）跑同样的脚本完全正常。**解法**：`Start-ASR.cmd` / `Stop-ASR.cmd` 默认优先 `pwsh`，找不到才回退 `powershell`。
+
+**8）`.cmd` 里不能出现中文**
+
+批处理按 ANSI 代码页（936）解码，UTF-8 的中文注释会被拆成命令执行，报一堆 `'xxx' 不是内部或外部命令`。**解法**：两个 `.cmd` 全部纯 ASCII，注释也用英文。加了 BOM 同样会出问题。
+
+**9）`start.ps1` 必须幂等**
+
+原本端口被占用就直接 `throw`。双击场景下这会让用户以为“失败了”。现在改成：先探 `/health`，`ok:true` 就打印 `already running` 并返回 0；只有端口被**别的程序**占用时才报错。
 
 ---
 

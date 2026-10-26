@@ -1,5 +1,9 @@
 * text=auto eol=lf
 
+# 批处理必须 CRLF：某些 cmd 解析器对 LF-only 的 goto/label 处理不一致
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
 *.whl binary
 *.png binary
 *.jpg binary
